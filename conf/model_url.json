@@ -1,0 +1,14 @@
+[
+    {"name":"qwen2.5-1.5B", "url":"http://9.15.87.200:5013/coremind/llm/v1/chat/completions"},
+    {"name":"Pro/deepseek-ai/DeepSeek-R1", "url":"https://api.siliconflow.cn/v1/chat/completions"},
+    {"name":"DeepSeek-R1-w8a8", "url":"http://9.15.87.225:1025/v1/chat/completions"},
+    {"name":"qwen2_vl", "url":"http://9.15.87.9:9098/coremind/llm/v1/chat/completion"},
+    {"name":"qwq_32b", "url":"http://9.15.87.9:8076/qwen/chat/completions"},
+    {"name":"Qwen2.5-32B-Instruct", "url":"http://9.15.87.9:8075/qwen/chat/completions"},
+    {"name":"qwen2.5-vl-32b", "url":"http://9.15.87.141:5056/coremind/llm/v1/chat/completion"},
+    {"name":"ui_tars_1.5_7b", "url":"http://9.15.87.9:7777/v1/chat/completions"},
+    {"name":"Qwen3-8B", "url":"http://9.15.87.147:8520/v1/chat/completions"},
+    {"name":"Qwen3-32B", "url":"http://9.15.87.148:8084/v1/chat/completions"},
+    {"name":"Qwen3-32B-RewriteQA", "url":"http://9.15.87.116:1040/v1/chat/completions"},
+    {"name":"qwen3-30b", "url":"http://151.210.17.70:7000/v1/chat/completions"}
+]

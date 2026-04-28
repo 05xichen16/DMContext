@@ -1,0 +1,76 @@
+{
+    "com_params": {
+        "aging_period": "30"
+    },
+    "aging_policy":[
+        {
+            "aging_policy_id": "1",
+            "memory_type": "user_conversion",
+            "aging_time": "4320",
+            "time_key":"create_date",
+            "max_records": "10000",
+            "check_cycle": "30"
+        },
+        {
+            "aging_policy_id": "2",
+            "memory_type": "user_fact_mem",
+            "aging_time": "4320",
+            "time_key":"create_date",
+            "max_records": "10000",
+            "check_cycle": "30"
+        }
+    ],
+    "memory_tbl_map": {
+        "qa_short_memory": "tbl_qa_short_memory",
+        "rewrite_rule_example": "tbl_rewrite_rule_example"
+    },
+    "database":[
+        {
+            "memory_type":"qa_short_memory",
+            "schema":"database/qa_short_memory_schema.json",
+            "alter": "[{\"opType\":\"add\", \"filedName\":\"sub_user_id\", \"filedType\":\"string\", \"length\":256},{\"opType\":\"add\", \"filedName\":\"agent_name\", \"filedType\":\"string\", \"length\":256},{\"opType\":\"add\", \"filedName\":\"session_id\", \"filedType\":\"string\", \"length\":256},{\"opType\":\"add\", \"filedName\":\"voiceprint_id\", \"filedType\":\"string\", \"length\":256},{\"opType\":\"add\", \"filedName\":\"face_id\", \"filedType\":\"string\", \"length\":256}]"
+        },
+        {
+            "memory_type":"rewrite_rule_example",
+            "schema":"database/rewrite_rule_example_schema.json"
+        }
+    ],
+    "model": {
+        "model_url":"model/model_url.json",
+        "prompt":"model/prompt.json"
+    },
+    "rerank_config": {
+        "url": "http://192.168.17.47:3025",
+        "top_k": "5",
+        "reject_score": "0.1",
+        "paas_score": "0.5",
+        "max_memories": "20"
+    },
+    "rewrite_rule_config": {
+        "prompt_select_enable": "1",
+        "rrf_bm25_ratio": "0.8",
+        "rrf_embedding_ratio": "0.2",
+        "bm25_top_k": "5",
+        "embedding_top_k": "3",
+        "first_level_score": "0.9",
+        "second_level_score": "0.7"
+    },
+    "query_config": {
+        "mode": "quality",
+        "max_db_query_turns": "20"
+    },
+    "forget_memory_commands": [
+        "忘掉我的记忆。",
+        "忘掉我的记忆",
+        "忘掉记忆。",
+        "忘掉记忆",
+        "清空我的记忆。",
+        "清空我的记忆",
+        "清空记忆。",
+        "清空记忆",
+        "删除我的记忆。",
+        "删除我的记忆",
+        "删除记忆。",
+        "删除记忆"
+    ]
+}
