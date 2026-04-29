@@ -69,51 +69,85 @@ bool ParseSize(const std::string& sizeStr, size_t& outBytes)
     }
 }
 
-// 启动后第一次调用时从 ConfigMgr 拉取 log 段并缓存（不支持热加载）。
+// 每次调用都从 ConfigMgr 重新读取，支持 PUT /api/v1/contexts/configs/item?type=log 热生效。
+// 仅当原始字符串与上次不同才重新打 LOG，避免高频 flush 时刷屏。
 size_t GetMaxFileSize()
 {
-    static size_t cached = DEFAULT_MAX_FILE_SIZE;
-    static std::once_flag flag;
-    std::call_once(flag, []() {
-        auto m = ConfigMgr::GetInstance()->GetLogMap();
-        auto it = m.find("size");
-        size_t parsed = 0;
-        if (it != m.end() && ParseSize(it->second, parsed)) {
-            cached = parsed;
-        } else {
-            LOG_WARNING("GetMaxFileSize: log.size missing or invalid, use default %zu", cached);
-        }
-        LOG_INFO("Log rotation: maxFileSize=%zu bytes", cached);
-    });
-    return cached;
+    static std::mutex mtx;
+    static std::string lastRaw;
+    static size_t lastParsed = DEFAULT_MAX_FILE_SIZE;
+    static bool initialized = false;
+
+    auto m = ConfigMgr::GetInstance()->GetLogMap();
+    std::string raw;
+    auto it = m.find("size");
+    if (it != m.end()) {
+        raw = it->second;
+    }
+
+    std::lock_guard<std::mutex> lock(mtx);
+    if (initialized && raw == lastRaw) {
+        return lastParsed;
+    }
+
+    size_t parsed = 0;
+    if (raw.empty()) {
+        LOG_WARNING("Log rotation: log.size missing, fallback to default %zu bytes",
+                    DEFAULT_MAX_FILE_SIZE);
+        lastParsed = DEFAULT_MAX_FILE_SIZE;
+    } else if (ParseSize(raw, parsed)) {
+        LOG_INFO("Log rotation: maxFileSize -> %zu bytes (raw='%s')", parsed, raw.c_str());
+        lastParsed = parsed;
+    } else {
+        LOG_WARNING("Log rotation: log.size='%s' invalid, fallback to default %zu bytes",
+                    raw.c_str(), DEFAULT_MAX_FILE_SIZE);
+        lastParsed = DEFAULT_MAX_FILE_SIZE;
+    }
+    lastRaw = raw;
+    initialized = true;
+    return lastParsed;
 }
 
 int GetMaxArchiveCount()
 {
-    static int cached = DEFAULT_MAX_ARCHIVE_COUNT;
-    static std::once_flag flag;
-    std::call_once(flag, []() {
-        auto m = ConfigMgr::GetInstance()->GetLogMap();
-        auto it = m.find("num");
-        if (it != m.end()) {
-            try {
-                int n = std::stoi(it->second);
-                if (n > 0) {
-                    cached = n;
-                } else {
-                    LOG_WARNING("GetMaxArchiveCount: num='%s' non-positive, use default %d",
-                                it->second.c_str(), cached);
-                }
-            } catch (...) {
-                LOG_WARNING("GetMaxArchiveCount: num='%s' parse failed, use default %d",
-                            it->second.c_str(), cached);
-            }
-        } else {
-            LOG_WARNING("GetMaxArchiveCount: log.num missing, use default %d", cached);
+    static std::mutex mtx;
+    static std::string lastRaw;
+    static int lastParsed = DEFAULT_MAX_ARCHIVE_COUNT;
+    static bool initialized = false;
+
+    auto m = ConfigMgr::GetInstance()->GetLogMap();
+    std::string raw;
+    auto it = m.find("num");
+    if (it != m.end()) {
+        raw = it->second;
+    }
+
+    std::lock_guard<std::mutex> lock(mtx);
+    if (initialized && raw == lastRaw) {
+        return lastParsed;
+    }
+
+    int parsed = 0;
+    bool ok = false;
+    if (!raw.empty()) {
+        try {
+            parsed = std::stoi(raw);
+            ok = parsed > 0;
+        } catch (...) {
+            ok = false;
         }
-        LOG_INFO("Log rotation: maxArchiveCount=%d", cached);
-    });
-    return cached;
+    }
+    if (ok) {
+        LOG_INFO("Log rotation: maxArchiveCount -> %d (raw='%s')", parsed, raw.c_str());
+        lastParsed = parsed;
+    } else {
+        LOG_WARNING("Log rotation: log.num='%s' invalid or missing, fallback to default %d",
+                    raw.c_str(), DEFAULT_MAX_ARCHIVE_COUNT);
+        lastParsed = DEFAULT_MAX_ARCHIVE_COUNT;
+    }
+    lastRaw = raw;
+    initialized = true;
+    return lastParsed;
 }
 
 // 全局：(dir|fileName) -> 互斥锁；用于把 stat / 写文件 / rotate 串成一把锁内的原子动作。

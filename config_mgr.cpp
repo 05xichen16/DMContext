@@ -182,6 +182,7 @@ std::map<std::string, std::string> ConfigMgr::GetModelMap()
 
 std::map<std::string, std::string> ConfigMgr::GetLogMap()
 {
+    std::lock_guard<std::mutex> lock(m_configMutex);
     return m_logMap;
 }
 
