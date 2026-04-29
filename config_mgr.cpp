@@ -25,6 +25,7 @@ static const std::string MEM_TABLE = "memory_tbl_map";
 static const std::string MEM_POLICY = "mem_policy";
 static const std::string DATABASE = "database";
 static const std::string MODEL = "model";
+static const std::string LOG = "log";
 static const std::string MEM_SUMMARY = "memory_summary";
 static const std::string MOVIE_CFG = "movie_config";
 static const std::string MEM_PERSONA = "memory_persona";
@@ -132,6 +133,10 @@ void ConfigMgr::InitConfigMgr()
     const rapidjson::Value *modelJson = JsonParser::GetNode(cfgJson, MODEL);
     m_modelMap = GetStringMap(modelJson);
 
+    //初始化日志归档配置文件路径
+    const rapidjson::Value *logJson = JsonParser::GetNode(cfgJson, LOG);
+    m_logMap = GetStringMap(logJson);
+
     //加载改写配置文件
     LoadRewriteRuleConfig(cfgJson);
 
@@ -173,6 +178,11 @@ std::string ConfigMgr::GetDMContextCfgRoot()
 std::map<std::string, std::string> ConfigMgr::GetModelMap()
 {
     return m_modelMap;
+}
+
+std::map<std::string, std::string> ConfigMgr::GetLogMap()
+{
+    return m_logMap;
 }
 
 std::vector<std::map<std::string, std::string>> ConfigMgr::GetDatabaseSchemaVector()
@@ -246,6 +256,7 @@ std::vector<std::string> ConfigMgr::GetAllConfigTypes()
         "aging_policy",
         "memory_tbl_map",
         "model",
+        "log",
         "rerank_config",
         "rewrite_rule_config",
         "query_config",
@@ -260,6 +271,8 @@ std::map<std::string, std::string> ConfigMgr::GetConfigByType(const std::string&
         return m_commonParams;
     } else if (type == "model") {
         return m_modelMap;
+    } else if (type == "log") {
+        return m_logMap;
     } else if (type == "rerank_config") {
         return m_rerankConfigParams;
     } else if (type == "rewrite_rule_config") {
@@ -334,6 +347,9 @@ bool ConfigMgr::UpdateConfig(const std::string& type, const std::string& name, c
         return true;
     } else if (type == "model") {
         m_modelMap[name] = value;
+        return true;
+    } else if (type == "log") {
+        m_logMap[name] = value;
         return true;
     } else if (type == "rerank_config") {
         m_rerankConfigParams[name] = value;
@@ -424,6 +440,14 @@ bool ConfigMgr::SaveConfigToFile()
         for (auto& pair : m_modelMap) {
             if (doc["model"].HasMember(pair.first.c_str())) {
                 doc["model"][pair.first.c_str()].SetString(pair.second.c_str(), doc.GetAllocator());
+            }
+        }
+    }
+
+    if (doc.HasMember("log") && doc["log"].IsObject()) {
+        for (auto& pair : m_logMap) {
+            if (doc["log"].HasMember(pair.first.c_str())) {
+                doc["log"][pair.first.c_str()].SetString(pair.second.c_str(), doc.GetAllocator());
             }
         }
     }

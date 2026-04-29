@@ -29,6 +29,7 @@ public:
     std::list<std::map<std::string, std::string>> GetAgPolicyList();
     std::vector<std::map<std::string, std::string>> GetDatabaseSchemaVector();
     std::map<std::string, std::string> GetModelMap();
+    std::map<std::string, std::string> GetLogMap();
     std::string GetDMContextCfgRoot();
 
     std::string GetLabelPolicyByAgentType(const std::string &agentType);
@@ -62,6 +63,7 @@ private:
     std::list<std::map<std::string, std::string>> m_agPolicyList;
     std::vector<std::map<std::string, std::string>> m_databaseSchemaMaps;
     std::map<std::string, std::string> m_modelMap;
+    std::map<std::string, std::string> m_logMap;
     std::map<std::string, std::string> m_rerankConfigParams;
     std::map<std::string, std::string> m_rewriteRuleConfigParams;
     std::map<std::string, std::string> m_queryConfigParams;

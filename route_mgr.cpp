@@ -275,6 +275,10 @@ CMFrm::COM::ServerRespHandleMode RouteMgr::HandleContextFiles(
                     LOG_INFO("break");
                     continue;
                 }
+                // 跳过归档压缩包，避免被当成 JSONL 解析
+                if (fileName.size() >= 3 && fileName.compare(fileName.size() - 3, 3, ".gz") == 0) {
+                    continue;
+                }
                 std::string filePath = entry.path().string();
                 std::ifstream file(filePath);
                 if (file.is_open()) {

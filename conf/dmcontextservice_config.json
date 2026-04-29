@@ -39,6 +39,9 @@
         "model_url":"model/model_url.json",
         "prompt":"model/prompt.json"
     },
+    "log": {
+        "log_config":"log.json"
+    },
     "rerank_config": {
         "url": "http://192.168.17.47:3025",
         "top_k": "5",

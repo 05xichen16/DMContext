@@ -6,10 +6,18 @@
 #include "model_log.h"
 #include "logger.h"
 #include "file_utils.h"
+#include "log_config.h"
 
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
 #include "rapidjson/stringbuffer.h"
+
+#include <zlib.h>
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <vector>
 
 using namespace rapidjson;
 
@@ -20,6 +28,186 @@ std::map<std::string, std::map<std::string, std::map<std::string, QueryApiLog*>>
 std::map<std::string, std::map<std::string, std::map<std::string, WriteApiLog*>>> ModelLogUtil::s_writeApiCache;
 std::map<std::string, std::map<std::string, DeleteApiLog*>> ModelLogUtil::s_deleteApiCache;
 std::mutex ModelLogUtil::s_cacheMutex;
+
+// ==================== 日志老化（rotation）相关 ====================
+namespace {
+// 日志根路径写死，与 file_utils.cpp 的 WriteModelLogNoTime 保持一致。
+// LogConfig 的 path 字段当前预留，未启用。
+static const std::string LOG_ROOT = "/opt/coremind/logs/ModelLogs/";
+constexpr size_t GZIP_CHUNK = 64 * 1024;
+
+// 全局：(dir|fileName) -> 互斥锁；用于把 stat / 写文件 / rotate 串成一把锁内的原子动作。
+std::mutex g_fileLockMapMutex;
+std::map<std::string, std::shared_ptr<std::mutex>> g_fileLockMap;
+
+std::shared_ptr<std::mutex> GetFileLock(const std::string& dir, const std::string& fileName)
+{
+    std::lock_guard<std::mutex> lk(g_fileLockMapMutex);
+    std::string key = dir + "|" + fileName;
+    auto it = g_fileLockMap.find(key);
+    if (it != g_fileLockMap.end()) {
+        return it->second;
+    }
+    auto m = std::make_shared<std::mutex>();
+    g_fileLockMap[key] = m;
+    return m;
+}
+
+bool GzipFile(const std::string& src, const std::string& dst)
+{
+    std::ifstream in(src, std::ios::binary);
+    if (!in.is_open()) {
+        LOG_ERR("GzipFile: open src %s failed", src.c_str());
+        return false;
+    }
+    gzFile gz = gzopen(dst.c_str(), "wb");
+    if (gz == nullptr) {
+        LOG_ERR("GzipFile: gzopen dst %s failed", dst.c_str());
+        return false;
+    }
+    std::vector<char> buf(GZIP_CHUNK);
+    while (true) {
+        in.read(buf.data(), buf.size());
+        std::streamsize got = in.gcount();
+        if (got <= 0) {
+            break;
+        }
+        int written = gzwrite(gz, buf.data(), static_cast<unsigned>(got));
+        if (written <= 0) {
+            LOG_ERR("GzipFile: gzwrite failed, src=%s", src.c_str());
+            gzclose(gz);
+            return false;
+        }
+    }
+    gzclose(gz);
+    return true;
+}
+
+// 从 OM_<contextId>_<ms>.gz 中解析 ms；不匹配则返回 0。
+int64_t ExtractTimestampFromArchiveName(const std::string& contextId, const std::string& fname)
+{
+    std::string prefix = "OM_" + contextId + "_";
+    static const std::string suffix = ".gz";
+    if (fname.size() <= prefix.size() + suffix.size()) {
+        return 0;
+    }
+    if (fname.compare(0, prefix.size(), prefix) != 0) {
+        return 0;
+    }
+    if (fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return 0;
+    }
+    std::string tsStr = fname.substr(prefix.size(), fname.size() - prefix.size() - suffix.size());
+    try {
+        return std::stoll(tsStr);
+    } catch (...) {
+        return 0;
+    }
+}
+
+// 扫描目录下属于该 contextId 的归档，超过 maxKeep 则按时间戳从老到新删除。
+void TrimArchives(const std::string& dirPath, const std::string& contextId, int maxKeep)
+{
+    std::vector<std::pair<int64_t, std::string>> archives;
+    std::error_code ec;
+    for (auto it = std::filesystem::directory_iterator(dirPath, ec);
+         it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        if (ec) {
+            LOG_ERR("TrimArchives: iterate %s failed: %s", dirPath.c_str(), ec.message().c_str());
+            return;
+        }
+        if (!it->is_regular_file(ec)) {
+            continue;
+        }
+        std::string fname = it->path().filename().string();
+        int64_t ts = ExtractTimestampFromArchiveName(contextId, fname);
+        if (ts > 0) {
+            archives.emplace_back(ts, it->path().string());
+        }
+    }
+    if (static_cast<int>(archives.size()) <= maxKeep) {
+        return;
+    }
+    std::sort(archives.begin(), archives.end()); // 升序，最老的在前
+    int toDelete = static_cast<int>(archives.size()) - maxKeep;
+    for (int i = 0; i < toDelete; ++i) {
+        std::error_code rmEc;
+        std::filesystem::remove(archives[i].second, rmEc);
+        if (rmEc) {
+            LOG_ERR("TrimArchives: remove %s failed: %s",
+                    archives[i].second.c_str(), rmEc.message().c_str());
+        } else {
+            LOG_INFO("TrimArchives: removed old archive %s", archives[i].second.c_str());
+        }
+    }
+}
+
+// fileName 必须形如 "OM_<contextId>"。在已持有 (dir,fileName) 锁的前提下调用。
+void RotateIfExceeded(const std::string& dir, const std::string& fileName)
+{
+    if (fileName.size() <= 3 || fileName.compare(0, 3, "OM_") != 0) {
+        return;
+    }
+    std::string contextId = fileName.substr(3);
+    std::string dirPath = LOG_ROOT + dir;
+    std::string filePath = dirPath + "/" + fileName;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(filePath, ec)) {
+        return;
+    }
+    auto sz = std::filesystem::file_size(filePath, ec);
+    if (ec) {
+        LOG_ERR("RotateIfExceeded: file_size %s failed: %s",
+                filePath.c_str(), ec.message().c_str());
+        return;
+    }
+    size_t threshold = LogConfig::GetInstance()->GetMaxFileSize();
+    if (sz < threshold) {
+        return;
+    }
+
+    auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::system_clock::now().time_since_epoch())
+                     .count();
+    std::string archivePath = dirPath + "/OM_" + contextId + "_" + std::to_string(nowMs) + ".gz";
+    std::string tmpArchivePath = archivePath + ".tmp";
+
+    LOG_INFO("RotateIfExceeded: %s size=%zu >= threshold=%zu, archive to %s",
+             filePath.c_str(), sz, threshold, archivePath.c_str());
+
+    // 1. 先压到 .tmp，避免半成品被识别为正式归档
+    if (!GzipFile(filePath, tmpArchivePath)) {
+        std::filesystem::remove(tmpArchivePath, ec);
+        return;
+    }
+    // 2. .tmp → 最终归档
+    std::filesystem::rename(tmpArchivePath, archivePath, ec);
+    if (ec) {
+        LOG_ERR("RotateIfExceeded: rename %s -> %s failed: %s",
+                tmpArchivePath.c_str(), archivePath.c_str(), ec.message().c_str());
+        std::filesystem::remove(tmpArchivePath, ec);
+        return;
+    }
+    // 3. 删原日志
+    std::filesystem::remove(filePath, ec);
+    if (ec) {
+        LOG_ERR("RotateIfExceeded: remove original %s failed: %s",
+                filePath.c_str(), ec.message().c_str());
+    }
+    // 4. 裁剪到 maxArchiveCount 份（只针对该 contextId）
+    TrimArchives(dirPath, contextId, LogConfig::GetInstance()->GetMaxArchiveCount());
+}
+
+void WriteAndRotate(const std::string& dir, const std::string& fileName,
+                    const std::string& jsonStr)
+{
+    auto fileLock = GetFileLock(dir, fileName);
+    std::lock_guard<std::mutex> lk(*fileLock);
+    FileUtils::WriteModelLogNoTime(dir, fileName, jsonStr);
+    RotateIfExceeded(dir, fileName);
+}
+}  // namespace
 
 // ==================== QueryApi缓存相关实现 ====================
 
@@ -49,7 +237,7 @@ void ModelLogUtil::FlushQueryApiToFile(const std::string& dir, const std::string
 {
     std::string jsonStr = QueryApiLogToJson(logData);
     if (!jsonStr.empty()) {
-        FileUtils::WriteModelLogNoTime(dir, fileName, jsonStr);
+        WriteAndRotate(dir, fileName, jsonStr);
         LOG_INFO("FlushQueryApiToFile success, dir: %s, fileName: %s", dir.c_str(), fileName.c_str());
     }
 }
@@ -150,7 +338,7 @@ void ModelLogUtil::FlushWriteApiToFile(const std::string& dir, const std::string
 {
     std::string jsonStr = WriteApiLogToJson(logData);
     if (!jsonStr.empty()) {
-        FileUtils::WriteModelLogNoTime(dir, fileName, jsonStr);
+        WriteAndRotate(dir, fileName, jsonStr);
         LOG_INFO("FlushWriteApiToFile success, dir: %s, fileName: %s", dir.c_str(), fileName.c_str());
     }
 }
@@ -247,7 +435,7 @@ void ModelLogUtil::FlushDeleteApiToFile(const std::string& dir, const std::strin
 {
     std::string jsonStr = DeleteApiLogToJson(logData);
     if (!jsonStr.empty()) {
-        FileUtils::WriteModelLogNoTime(dir, fileName, jsonStr);
+        WriteAndRotate(dir, fileName, jsonStr);
         LOG_INFO("FlushDeleteApiToFile success, dir: %s, fileName: %s", dir.c_str(), fileName.c_str());
     }
 }

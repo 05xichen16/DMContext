@@ -13,6 +13,7 @@
 #include "model_mgr.h"
 #include "common_define.h"
 #include "config_mgr.h"
+#include "log_config.h"
 #include "datatable/database_mgr.h"
 #include "microservice/microservice_mgr.h"
 #include "qa_short_memory_mgr.h"
@@ -32,6 +33,9 @@ int main(int argc, char *argv[])
 
     // 初始化配置管理模块
     ConfigMgr::GetInstance()->InitConfigMgr();
+
+    // 初始化日志归档配置
+    LogConfig::GetInstance()->Init();
 
     // 初始化rag sdk
     ret = CMFrm::Utils::Retry([]() -> bool { return RagMgr::GetInstance()->Init(); }, CMFrm::Constants::RetryCount10,
