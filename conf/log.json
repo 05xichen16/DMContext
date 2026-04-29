@@ -1,7 +1,0 @@
-{
-  "DMContextService": {
-    "path": "/opt/coremind/logs/ModelLogs/",
-    "size": "20M",
-    "num": 10
-  }
-}

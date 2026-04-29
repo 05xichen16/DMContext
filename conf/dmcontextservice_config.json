@@ -40,7 +40,9 @@
         "prompt":"model/prompt.json"
     },
     "log": {
-        "log_config":"log.json"
+        "path": "/opt/coremind/logs/ModelLogs/",
+        "size": "20M",
+        "num": "10"
     },
     "rerank_config": {
         "url": "http://192.168.17.47:3025",

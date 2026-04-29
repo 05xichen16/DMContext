@@ -6,7 +6,7 @@
 #include "model_log.h"
 #include "logger.h"
 #include "file_utils.h"
-#include "log_config.h"
+#include "config_mgr.h"
 
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
@@ -17,6 +17,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <vector>
 
 using namespace rapidjson;
@@ -32,9 +33,88 @@ std::mutex ModelLogUtil::s_cacheMutex;
 // ==================== 日志老化（rotation）相关 ====================
 namespace {
 // 日志根路径写死，与 file_utils.cpp 的 WriteModelLogNoTime 保持一致。
-// LogConfig 的 path 字段当前预留，未启用。
+// dmcontextservice_config.json:log.path 字段当前预留，未启用。
 static const std::string LOG_ROOT = "/opt/coremind/logs/ModelLogs/";
 constexpr size_t GZIP_CHUNK = 64 * 1024;
+constexpr size_t DEFAULT_MAX_FILE_SIZE = 20ULL * 1024 * 1024;
+constexpr int DEFAULT_MAX_ARCHIVE_COUNT = 10;
+
+// 解析 "20K"/"20M"/"20G"（不接受纯数字）。
+bool ParseSize(const std::string& sizeStr, size_t& outBytes)
+{
+    if (sizeStr.empty()) {
+        return false;
+    }
+    char unit = sizeStr.back();
+    size_t multiplier = 0;
+    switch (unit) {
+        case 'K': case 'k': multiplier = 1024ULL; break;
+        case 'M': case 'm': multiplier = 1024ULL * 1024; break;
+        case 'G': case 'g': multiplier = 1024ULL * 1024 * 1024; break;
+        default:
+            LOG_ERR("ParseSize: '%s' missing unit (K/M/G)", sizeStr.c_str());
+            return false;
+    }
+    try {
+        long long n = std::stoll(sizeStr.substr(0, sizeStr.size() - 1));
+        if (n <= 0) {
+            LOG_ERR("ParseSize: '%s' non-positive", sizeStr.c_str());
+            return false;
+        }
+        outBytes = static_cast<size_t>(n) * multiplier;
+        return true;
+    } catch (...) {
+        LOG_ERR("ParseSize: '%s' parse failed", sizeStr.c_str());
+        return false;
+    }
+}
+
+// 启动后第一次调用时从 ConfigMgr 拉取 log 段并缓存（不支持热加载）。
+size_t GetMaxFileSize()
+{
+    static size_t cached = DEFAULT_MAX_FILE_SIZE;
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        auto m = ConfigMgr::GetInstance()->GetLogMap();
+        auto it = m.find("size");
+        size_t parsed = 0;
+        if (it != m.end() && ParseSize(it->second, parsed)) {
+            cached = parsed;
+        } else {
+            LOG_WARNING("GetMaxFileSize: log.size missing or invalid, use default %zu", cached);
+        }
+        LOG_INFO("Log rotation: maxFileSize=%zu bytes", cached);
+    });
+    return cached;
+}
+
+int GetMaxArchiveCount()
+{
+    static int cached = DEFAULT_MAX_ARCHIVE_COUNT;
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        auto m = ConfigMgr::GetInstance()->GetLogMap();
+        auto it = m.find("num");
+        if (it != m.end()) {
+            try {
+                int n = std::stoi(it->second);
+                if (n > 0) {
+                    cached = n;
+                } else {
+                    LOG_WARNING("GetMaxArchiveCount: num='%s' non-positive, use default %d",
+                                it->second.c_str(), cached);
+                }
+            } catch (...) {
+                LOG_WARNING("GetMaxArchiveCount: num='%s' parse failed, use default %d",
+                            it->second.c_str(), cached);
+            }
+        } else {
+            LOG_WARNING("GetMaxArchiveCount: log.num missing, use default %d", cached);
+        }
+        LOG_INFO("Log rotation: maxArchiveCount=%d", cached);
+    });
+    return cached;
+}
 
 // 全局：(dir|fileName) -> 互斥锁；用于把 stat / 写文件 / rotate 串成一把锁内的原子动作。
 std::mutex g_fileLockMapMutex;
@@ -162,7 +242,7 @@ void RotateIfExceeded(const std::string& dir, const std::string& fileName)
                 filePath.c_str(), ec.message().c_str());
         return;
     }
-    size_t threshold = LogConfig::GetInstance()->GetMaxFileSize();
+    size_t threshold = GetMaxFileSize();
     if (sz < threshold) {
         return;
     }
@@ -196,7 +276,7 @@ void RotateIfExceeded(const std::string& dir, const std::string& fileName)
                 filePath.c_str(), ec.message().c_str());
     }
     // 4. 裁剪到 maxArchiveCount 份（只针对该 contextId）
-    TrimArchives(dirPath, contextId, LogConfig::GetInstance()->GetMaxArchiveCount());
+    TrimArchives(dirPath, contextId, GetMaxArchiveCount());
 }
 
 void WriteAndRotate(const std::string& dir, const std::string& fileName,
